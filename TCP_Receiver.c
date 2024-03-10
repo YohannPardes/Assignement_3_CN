@@ -106,7 +106,6 @@ int main(int argc, char* argv[])
         {
             // allocating buffer
             bytes_received = recv(sender_sock, buffer, BUFFER_SIZE, 0);
-            fprintf(stdout, "%d", bytes_received);
             fprintf(stdout, "received %d bytes from the sender\n", bytes_received);
             if (bytes_received < 0)
             {
