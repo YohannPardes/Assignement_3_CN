@@ -6,30 +6,27 @@
 #include <stdlib.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <sys/time.h>
 
-#define SERVER_IP "127.0.0.1"
-#define BUFFER_SIZE 1460
-#define MAX_WAIT_TIME = 2 // seconds
+#define BUFFER_SIZE 1024 * 1024
 #define MAX_LISTENING 1
+#define MAX_FILE_SEND 100
 
 
 int main(int argc, char* argv[])
 {
-	char* server_port = argv[0];
-	int SERVER_PORT = atoi(server_port);
-	char* ALGO = argv[1];
+	char* server_port = argv[2];
+	int RECEIVER_PORT = atoi(server_port);
+	char* ALGO = argv[4];
 
 	/// opening socket ///
-	fprintf(stdout, "Starting Receiver...");
+	fprintf(stdout, "Starting Receiver...\n");
 	int sock = -1;
-	struct sockaddr_in receiver; // to store the receiver address
 
+	struct sockaddr_in receiver; // to store the receiver address
 	struct sockaddr_in sender; // to store the sender address
 
 	socklen_t sender_len = sizeof(sender);
-
-	// store socket for reusing receiver address
-	int opt = 1;
 
 	// Reset receiver and sender structs
 	memset(&receiver, 0, sizeof (receiver));
@@ -42,9 +39,9 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	if(setsockopt(sock, SOL_SOCKET, TCP_CONGESTION, &opt, sizeof(opt)) < 0)
+	if(setsockopt(sock, SOL_SOCKET, TCP_CONGESTION, &ALGO, sizeof(ALGO)) < 0)
 	{
-		perror("setsockopt(2)");
+		perror("setsockopt");
 		close(sock);
 		return 1;
 	}
@@ -52,7 +49,7 @@ int main(int argc, char* argv[])
 	receiver.sin_addr.s_addr = INADDR_ANY;
 	receiver.sin_family = AF_INET; // IPv4
 
-	receiver.sin_port = htons(SERVER_PORT);
+	receiver.sin_port = htons(RECEIVER_PORT);
 
 	if (bind(sock, (struct sockaddr*) &receiver, sizeof (receiver)) < 0)
 	{
@@ -68,51 +65,98 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	fprintf(stdout, "Waiting for TCP connection on port %d... \n", SERVER_PORT);
+	fprintf(stdout, "Waiting for TCP connection on port %d... \n", RECEIVER_PORT);
 
+    int sender_sock = accept(sock, (struct sockaddr*)&sender, &sender_len);
+    if (sender_sock < 0)
+    {
+        perror("accept(2)");
+        close(sock);
+        return 1;
+    }
+
+
+    // variable for metrics
+    typedef struct run_details {
+        unsigned int size;
+        int id;
+        struct timeval starting_time;
+        struct timeval ending_time;
+    }RunDetails;
+    RunDetails run_list[MAX_FILE_SEND];
+    int total_file_size = 0;
 	// The receiver listening main loop
-	while(1)
-	{
-		int sender_sock = accept(sock, (struct sockaddr*)&sender, &sender_len);
-		if (sender_sock < 0)
-		{
-			perror("accept(2)");
-			close(sock);
-			return 1;
-		}
+    int i = 0;
+    int bytes_received = 1;
+    int keep_going = 1;
+    char buffer[BUFFER_SIZE] = {0};
+    unsigned int current_file_size = 0;
 
-		fprintf(stdout, "Sender %s:%d connected, beginning to receiver file.. ", inet_ntoa(sender.sin_addr), ntohs(sender.sin_port));
+    // the main loop for each file
+    while(keep_going)
+    {
+        bytes_received = 0;
+        current_file_size = 0;
+        run_list[i].id = i + 1;
+        gettimeofday(&run_list[i].starting_time, NULL);
+        fprintf(stdout, "Sender %s:%d connected, beginning to receiver file.. \n", inet_ntoa(sender.sin_addr), ntohs(sender.sin_port));
 
-		// allocating buffer
-		char buffer[BUFFER_SIZE] = {0};
-		int bytes_received = recv(sender_sock, buffer, BUFFER_SIZE, 0);
-		if (bytes_received < 0)
-		{
-			perror("recv(2)");
-			close(sender_sock);
-			close(sock);
-			return 1;
-		}
+        // the loop for one file (we can see the
+        do
+        {
+            // allocating buffer
+            bytes_received = recv(sender_sock, buffer, BUFFER_SIZE, 0);
+            fprintf(stdout, "%d", bytes_received);
+            fprintf(stdout, "received %d bytes from the sender\n", bytes_received);
+            if (bytes_received < 0)
+            {
+                perror("recv(2)");
+                close(sender_sock);
+                close(sock);
+                return 1;
+            }
 
-		if (strcmp(ALGO,"reno"))
-		{
+            total_file_size += bytes_received; // incrementing the total data passed
+            current_file_size += bytes_received;
 
+        } while(current_file_size < 3 * 1024 * 1024 && bytes_received != 0);
 
-		}
-		else if (strcmp(ALGO, "cubic"))
-		{
+        gettimeofday(&run_list[i].ending_time, NULL);
+        run_list[i].size = current_file_size;
+        i++;
+        fprintf(stdout, "current file size = %d\n", run_list[i].size);
 
-		}
-
-
-
-		//////// TCP RENO ////////
-
-
-		fprintf(stdout, "File transfer completed.");
-
-
+        if (strcmp(buffer, "Close connections.") == 0)
+        {
+            fprintf(stdout, "Got an exit message from sender.\nEnding connection\n");
+            keep_going = 0;
+        }
 	}
 
+    fprintf(stdout, "-----------------------------------------------\n"
+                    "-              * Statistics *              -\n");
 
+    long global_time_ms= 0;
+    for (int j = 0; j < i; ++j)
+    {
+        long seconds = run_list[j].ending_time.tv_sec - run_list[j].starting_time.tv_sec;
+        long micros = run_list[j].ending_time.tv_usec - run_list[j].starting_time.tv_usec;
+        double mseconds = (double)micros / 1000 + (seconds * 1000);
+
+        double speed = run_list[i].size / ((double)seconds)  ;
+        fprintf(stdout,"- Run #%d Data: Time= %.2fms\n",j, mseconds);
+        global_time_ms += mseconds;
+
+    }
+
+    double avg_time = global_time_ms / i;
+    fprintf(stdout,"Average time: %.2fms\n", avg_time);
+
+    double global_seconds_taken = global_time_ms * 1000;
+    double avg_bandwidth = total_file_size / global_seconds_taken;
+    fprintf(stdout,"Average bandwidth: %.2fMB/s\n", avg_bandwidth);
+
+    fprintf(stdout, "-----------------------------------------------\n"
+                    "Reicever end.\n");
+    return 0;
 }

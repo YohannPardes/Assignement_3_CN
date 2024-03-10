@@ -5,10 +5,14 @@
 #include <string.h> // For the memset function
 #include <stdlib.h>
 #include <time.h>
+#include <netinet/tcp.h>
+#include <netinet/in.h>
+#include <sys/types.h>
+
 
 /*
 * @brief A random data generator function based on srand() and rand().
-* @param size The size of the data to generate (up to 2^32 bytes).
+* @param size The size of the data to generate (up to 5^32 bytes).
 * @return A pointer to the buffer.
 */
 char *util_generate_random_data(unsigned int size) {
@@ -28,22 +32,24 @@ char *util_generate_random_data(unsigned int size) {
 }
 
 #define BUFFER_SIZE 1460
+#define FILE_SIZE 2 * 1024 * 1024
 
 int main(int argc, char* argv[])
 {
-	char* SERVER_IP = argv[0];
-	char* server_port = argv[1]; // todo - convert to int
-	char* ALGO = argv[2];
+	char* SERVER_IP = argv[2];
+	char* receiver_port = argv[4];
+	char* ALGO = argv[6];
 
-	int SERVER_PORT = 8080; // todo
+	int RECEIVER_PORT = atoi(receiver_port);
 
 	int sock = -1;
 	struct sockaddr_in receiver;
 
+    fprintf(stdout, "Sender started.\n");
 	//// PART 1 - creating and reading the File ////
-	char * message = util_generate_random_data(3145728); // create a 3MB file to read from
-
-	char buffer[BUFFER_SIZE] = {0};
+	unsigned int size = 3 * 1024 * 1024;
+	char * message = util_generate_random_data(size); // create a 5MB file to read from
+    fprintf(stdout, "\nThe current message : %s ---\n", message);
 
 	memset(&receiver, 0, sizeof(receiver));
 
@@ -55,7 +61,7 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	if (inet_pton(AF_INET, SERVER_IP, &receiver) <= 0)
+	if (inet_pton(AF_INET, SERVER_IP, &receiver.sin_addr) <= 0)
 	{
 		perror("inet_pton(3)");
 		close(sock);
@@ -64,9 +70,9 @@ int main(int argc, char* argv[])
 	}
 
 	receiver.sin_family = AF_INET;
-	receiver.sin_port = htons(SERVER_PORT);
+	receiver.sin_port = htons(RECEIVER_PORT);
 
-	fprintf(stdout, "Connecting to %s:%d...\n", SERVER_IP, SERVER_PORT);
+	fprintf(stdout, "Connecting to %s : %d...\n", SERVER_IP, RECEIVER_PORT);
 
 	if (connect(sock, (struct sockaddr *)&receiver, sizeof (receiver))< 0)
 	{
@@ -76,13 +82,21 @@ int main(int argc, char* argv[])
 		return 1;
 	}
 
-	fprintf(stdout, "Successfully connected to the server!\n"
-					"Sending message to the server: %s\n", message);
+    // setup congestion control algo
+    if (setsockopt(sock, IPPROTO_TCP, TCP_CONGESTION, ALGO, strlen((ALGO))) < 0)
+    {
+        perror("setsockopt");
+        close(sock);
+        return 1;
+    }
 
-	int choice;
+    fprintf(stdout, "Successfully connected to the server!\n"
+                                  "Sending message to the server...\n");
+
+	int choice = 0;
 	do
 	{
-		int bytes_sent = send(sock, message, strlen(message) + 1, 0);
+		int bytes_sent = send(sock, message, size, 0);
 		if (bytes_sent <= 0) {
 			perror("send(2)");
 			close(sock);
@@ -90,18 +104,22 @@ int main(int argc, char* argv[])
 			return 1;
 		}
 
-		fprintf(stdout, "Sent %d bytes to the server!\n"
-						"Waiting for the server to respond...\n", bytes_sent); // todo - check if we need a response from the server
+		fprintf(stdout, "Sent %d bytes to the server!\n", bytes_sent);
+		fprintf(stdout, "Send the file again ? \n1 - Yes\n"
+						"\n2 - No\n");
+        do
+        {
+            fscanf(stdin, "%d", &choice);
 
-		fprintf(stdout, "Send the file again ? \n1 - Yes"
-						"\n2 - No");
-		choice = scanf("%d", &choice);
+        } while (choice != 1 && choice != 2);
+
+        fprintf(stdout, "choice : %d\n", choice); // todo - TEMP
 
 	} while (choice == 1);
 
-	fprintf(stdout, "Sending exit message..");
+	fprintf(stdout, "Sending exit message..\n");
 	char * exit_message = "Close connections.";
-	int bytes_sent = send(sock, message, strlen(exit_message) + 1, 0);
+	int bytes_sent = send(sock, exit_message, strlen(exit_message) + 1, 0);
 	if (bytes_sent <= 0) {
 		perror("send(2)");
 		close(sock);
